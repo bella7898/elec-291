@@ -7,7 +7,7 @@
   - scrolling feature simulates a 'multiplayer' idea in the first loading screen
   - jumping feature is possible with a button
   - score increments and is displayed on the game end screen, able to be incremented as well. 
-## Lab 2 - Alarm Clock 2024
+## Lab 2 - Alarm Clock
 - requirements: functional clock and alarm, with buzzer
 - additional features:
   - stopwatch mode counts up forever
