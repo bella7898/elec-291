@@ -84,6 +84,7 @@ Wait50ms_L1:
 state_msg:   db 'State', 0
 temp_msg1:   db 'TO', 0
 temp_msg2:   db 'TJ', 0
+time_msg1:   db 'Clk', 0
 
 ;---------------------------------;
 ; Routine to initialize the ISR   ;
@@ -213,6 +214,12 @@ main:
     lcall ELCD_4BIT ; Configure LCD in four bit mode
 	Set_Cursor(1, 1)
     Send_Constant_String(#state_msg)
+    Set_Cursor(2, 1)
+    Send_Constant_String(#time_msg1)
+    Set_Cursor(1, 10) 
+    Send_Constant_String(#temp_msg1)
+    Set_Cursor(2, 10)
+    Send_Constant_String(#temp_msg2)
     
     ; Initialize variables
     mov FSM1_state, #0
