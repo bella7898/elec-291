@@ -567,6 +567,8 @@ Display_Parameters_LCD:
 Display_State_LCD: 
 	clr EA
 	
+    WriteCommand(#0x01)
+	
 	Set_Cursor(1, 1)
     Send_Constant_String(#state_msg)
 
@@ -644,7 +646,6 @@ main:
     ; Configure the pins connected to the LCD as outputs
 	mov P0MOD, #10101010b ; P0.1, P0.3, P0.5, P0.7 are outputs.  ('1' makes the pin output)
     mov P1MOD, #10000010b ; P1.7 and P1.1 are outputs
-	mov P4MOD, #00000100b
 
 	lcall Configure_Keypad_Pins
     
@@ -698,11 +699,9 @@ loop:
 	lcall FSM2
 
 	mov a, FSM1_state
-	jz Display_State_Normal ; state 0 shows normal state display
-	cjne a, #1, Display_State_Normal ; not state 1, show normal display
-
-	; if state 1, show parameters
-	lcall Display_Parameters_LCD
+	cjne a, #0, Display_State_Normal 
+	
+	lcall Display_Parameters_LCD ; state 0 shows parameters 
 	sjmp loop_continue
 
 Display_State_Normal:
@@ -853,7 +852,6 @@ FSM1_state5_done:
 ; temp: data from the sensor
 ; pwm: percentage of power
 
-
 FSM2:
     mov a, FSM1_state
 
@@ -881,39 +879,5 @@ FSM2_state4_entry:
 FSM2_state5_entry:
     cjne a, #5, FSM2_state0_entry
     ret
-;-------------------------------------------------------------------------------
-
-; If KEY1 was detected, increment or decrement Count1.  Notice that we are displying only
-; the least two signicant digits of a counter that can have values from 0 to 255.
-	jbc Key1_flag, Increment_Count1
-	sjmp Skip_Count1
-Increment_Count1:
-	jb SWA.0, Decrement_Count1
-	inc Count1
-	sjmp Display_Count1
-Decrement_Count1:
-	dec Count1
-Display_Count1:	
-    mov a, Count1
-    lcall Hex_to_bcd_8bit
-	lcall Display_BCD_7_Seg_HEX10
-Skip_Count1:
-
-; If KEY2 was detected, increment or decrement Count2.  Notice that we are displying only
-; the least two signicant digits of a counter that can have values from 0 to 255.
-	jbc Key2_flag, Increment_Count2
-	sjmp Skip_Count2
-Increment_Count2:
-	jb SWA.0, Decrement_Count2
-	inc Count2
-	sjmp Display_Count2
-Decrement_Count2:
-	dec Count2
-Display_Count2:	
-    mov a, Count2
-    lcall Hex_to_bcd_8bit
-	lcall Display_BCD_7_Seg_HEX32
-Skip_Count2:
-
 
 END
