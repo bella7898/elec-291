@@ -8,6 +8,14 @@ CLK           EQU 33333333 ; Microcontroller system crystal frequency in Hz
 TIMER2_RATE   EQU 1000     ; 1000Hz, for a timer tick of 1ms
 TIMER2_RELOAD EQU ((65536-(CLK/(12*TIMER2_RATE))))
 
+;FREQ   EQU 33333333
+;BAUD   EQU 115200
+;T2LOAD EQU 65536-(FREQ/(32*BAUD))
+
+FREQ   EQU 33333333
+BAUD   EQU 57600
+T2LOAD EQU 256-((FREQ*2)/(32*12*BAUD))
+
 ; Reset vector
 org 0x0000
     ljmp main
@@ -31,9 +39,21 @@ temp_reflow: ds 1
 time_reflow: ds 1
 sec:         ds 1 ; Seconds counter from timer interrupt
 sec1:        ds 1
-temp:        ds 1 ; Sensor interrupt
+ovenTemp:    ds 1 ; Sensor interrupt
 pwm:         ds 1 ; PWM output
 last_state:  ds 1 ; prev state of fsm 1
+
+;Temperature variables
+x:   ds 4
+y:   ds 4
+amb_tmp: ds 4
+therm_tmp: ds 4
+;bcd: ds 5
+
+VAL_LM4040: ds 2
+VAL_LM335:  ds 2
+VAL_THERM:  ds 2
+
 
 ; PWM generator
 ms10:		 ds 1 ; 1ms -> 10ms
@@ -42,7 +62,7 @@ T_target:	 ds 1 ; temperature parameter
 
 
 ; keypad storage
-bcd:		 ds 5 ;
+bcd:	ds 5 ;
 
 ; Three counters to display.
 Count1:      ds 1 ; Incremented/decremented when KEY1 is pressed.
@@ -55,6 +75,10 @@ bseg
 Key1_flag:   dbit 1
 Key2_flag:   dbit 1
 Key3_flag:   dbit 1
+sec_flag: 	 dbit 1
+
+;temp variable
+mf:		dbit 1
 
 cseg
 ; These 'equ' must match the wiring between the DE10Lite board and the LCD!
@@ -83,6 +107,342 @@ COL4 EQU P3.0
 $NOLIST
 $include(LCD_4bit_DE10Lite_no_RW.inc) ; A library of LCD related functions and utility macros
 $LIST
+
+myLUT:
+    DB 0xC0, 0xF9, 0xA4, 0xB0, 0x99        ; 0 TO 4
+    DB 0x92, 0x82, 0xF8, 0x80, 0x90        ; 4 TO 9
+    DB 0x88, 0x83, 0xC6, 0xA1, 0x86, 0x8E  ; A to F
+
+$include(math32.asm)
+
+;InitSerialPort:
+	; Configure serial port and baud rate
+;	clr TR2 ; Disable timer 2
+;	mov T2CON, #30H ; RCLK=1, TCLK=1 
+;	mov RCAP2H, #high(T2LOAD)  
+;	mov RCAP2L, #low(T2LOAD)
+;	setb TR2 ; Enable timer 2
+;	mov SCON, #52H
+;	ret
+
+InitSerialPort:
+	clr TR1 ; Disable timer 1
+	mov TMOD, #020H ; Set timer 1 as 8-bit auto reload
+	mov TH1, #T2LOAD
+	mov TL1, #0
+	mov a, PCON ; Set SMOD to 1
+	orl a, #80H
+	mov PCON, a
+	setb TR1 ; Enable timer 1
+	mov SCON, #52H
+	ret
+
+putchar:
+    jnb TI, putchar
+    clr TI
+    mov SBUF, a
+    ret
+
+SendString:
+    CLR A
+    MOVC A, @A+DPTR
+    JZ SSDone
+    LCALL putchar
+    INC DPTR
+    SJMP SendString
+SSDone:
+    ret
+
+;Temperature reading functions
+Display_Temp_Serial:
+	mov a, bcd+3
+	swap a
+	anl a, #0FH
+	orl a, #'0'
+	lcall putchar
+	
+	mov a, bcd+3
+	anl a, #0FH
+	orl a, #'0'
+	lcall putchar
+
+	mov a, bcd+2
+	swap a
+	anl a, #0FH
+	orl a, #'0'
+	lcall putchar
+	
+	mov a, bcd+2
+	anl a, #0FH
+	orl a, #'0'
+	lcall putchar
+	
+	mov a, #'.'
+	lcall putchar
+	
+	mov a, bcd+1
+	swap a
+	anl a, #0FH
+	orl a, #'0'
+	lcall putchar
+	
+	mov a, bcd+1
+	anl a, #0FH
+	orl a, #'0'
+	lcall putchar
+	
+	mov a, bcd+0
+	swap a
+	anl a, #0FH
+	orl a, #'0'
+	lcall putchar
+	
+	mov a, bcd+0
+	anl a, #0FH
+	orl a, #'0'
+	lcall putchar
+
+	mov a, #'\r'
+	lcall putchar
+	mov a, #'\n'
+	lcall putchar
+	
+	ret
+
+	
+S_BCD mac
+	push ar0
+	mov r0, %0
+	lcall ?S_BCD
+	pop ar0
+endmac
+
+?S_BCD:
+	push acc
+	; Write most significant digit
+	mov a, r0
+	swap a
+	anl a, #0fh
+	orl a, #30h
+	lcall putchar
+	; write least significant digit
+	mov a, r0
+	anl a, #0fh
+	orl a, #30h
+	lcall putchar
+	pop acc
+	ret
+	
+Read_ADC:
+	mov a, ADC_H
+	mov R1, a
+	mov a, ADC_L
+	mov R0, a
+	ret
+	
+Display_temp_7seg:
+	
+	mov dptr, #myLUT
+	mov HEX5, #0xFF
+	
+	mov a, bcd+3
+	anl a, #0FH
+	movc a, @a+dptr
+	mov HEX4, a
+	
+	mov a, bcd+2
+	swap a
+	anl a, #0FH
+	movc a, @a+dptr
+	mov HEX3, a
+	
+	mov a, bcd+2
+	anl a, #0FH
+	movc a, @a+dptr
+	anl a, #0x7f ; Turn on decimal point
+	mov HEX2, a
+
+	mov a, bcd+1
+	swap a
+	anl a, #0FH
+	movc a, @a+dptr
+	mov HEX1, a
+	
+	mov a, bcd+1
+	anl a, #0FH
+	movc a, @a+dptr
+	mov HEX0, a
+	
+	ret
+	
+TEMP_BCD2HEX:
+	; hundreds
+    mov a, bcd+3
+    anl a, #0x0F
+    mov b, #100
+    mul ab
+    mov R2, a
+
+    ; tens
+    mov a, bcd+2
+    swap a
+    anl a, #0x0F
+    mov b, #10
+    mul ab
+    add a, R2
+
+    ; ones
+    mov b, bcd+2
+    anl b, #0x0F
+    add a, b   ; final value in A
+    mov ovenTemp, a
+
+    ret
+	
+checkTemp:	
+	mov ADC_C, #0x03
+	lcall wait50ms
+	
+	mov R7, #16
+	mov VAL_LM4040+0, #0
+	mov VAL_LM4040+1, #0
+	
+	loop_ref:
+		lcall Read_ADC
+		mov a, R0
+		add a, VAL_LM4040+0
+		mov VAL_LM4040+0, a
+		mov a, R1
+		addc a, VAL_LM4040+1
+		mov VAL_LM4040+1, a
+		djnz R7, loop_ref
+		
+	mov ADC_C, #0x05
+	lcall wait50ms
+	
+	mov R7, #16
+	mov VAL_THERM+0, #0
+	mov VAL_THERM+1, #0
+	
+	loop_therm:
+	lcall Read_ADC
+	; Save result for later use
+	mov a, R0
+	add a, VAL_THERM+0
+	mov VAL_THERM+0, a
+	mov a, R1
+	addc a, VAL_THERM+1
+	mov VAL_THERM+1, a
+	djnz R7, loop_therm
+	
+	; CHN2 - LM335 Temperature Sensor
+	mov ADC_C, #0x04
+	lcall wait50ms
+	
+	mov R7, #16
+	mov VAL_LM335+0, #0
+	mov VAL_LM335+1, #0
+	
+	loop_amb:
+	lcall Read_ADC
+	; Save result for later use
+	mov a, R0
+	add a, VAL_LM335+0
+	mov VAL_LM335+0, a
+	mov a, R1
+	addc a, VAL_LM335+1
+	mov VAL_LM335+1, a
+	djnz R7, loop_amb
+	
+	; Perform voltage and temperature conversions to send to LCD and Serial
+	mov x+0, VAL_LM335+0
+	mov x+1, VAL_LM335+1
+	mov x+2, #0
+	mov x+3, #0
+	Load_y(41100) ; The MEASURED voltage reference: 4.0959V, with 4 decimal places
+	lcall mul32
+	; Retrive the ADC LM4040 value
+	mov y+0, VAL_LM4040+0
+	mov y+1, VAL_LM4040+1
+	; Pad other bits with zero
+	mov y+2, #0
+	mov y+3, #0
+	lcall div32
+
+	; Convert to temperature (LM335 Voltage)
+	Load_y(27300)
+	lcall sub32
+	Load_y(100)
+	lcall mul32
+	
+	mov amb_tmp+3, x+3
+	mov amb_tmp+2, x+2
+	mov amb_tmp+1, x+1
+	mov amb_tmp+0, x+0
+	
+	lcall hex2bcd
+	lcall Display_temp_7seg
+	
+	mov x+0, VAL_THERM+0
+	mov x+1, VAL_THERM+1
+	 ;Pad other bits with zero
+	mov x+2, #0
+	mov x+3, #0
+	Load_y(41100) ; The MEASURED voltage reference: 4.0959V, with 4 decimal places
+	lcall mul32
+	; Retrive the ADC LM4040 value
+	mov y+0, VAL_LM4040+0
+	mov y+1, VAL_LM4040+1
+	; Pad other bits with zero
+	mov y+2, #0
+	mov y+3, #0
+	lcall div32
+	Load_y(74)
+	lcall mul32
+	
+	mov therm_tmp+3, x+3
+	mov therm_tmp+2, x+2
+	mov therm_tmp+1, x+1
+	mov therm_tmp+0, x+0
+	
+	mov x+0, amb_tmp+0
+	mov x+1, amb_tmp+1
+	mov x+2, amb_tmp+2
+	mov x+3, amb_tmp+3
+
+	mov y+0, therm_tmp+0
+	mov y+1, therm_tmp+1
+	mov y+2, therm_tmp+2
+	mov y+3, therm_tmp+3
+	
+		
+	lcall add32
+	lcall hex2bcd
+	lcall Display_temp_7seg
+	lcall TEMP_BCD2HEX
+	lcall Display_Temp_Serial
+	
+	ret
+	
+checkFirst50:
+	mov a, sec
+	cjne a, #60, check50skip
+	sjmp check50Temp
+	
+check50skip:
+	ret
+	
+check50Temp:
+	lcall checkTemp
+	mov a, #50
+	clr c
+	subb a, ovenTemp
+	jnc stop
+	ret
+	
+stop:
+	mov FSM1_state, #0
+	ret
 
 Wait50ms:
 ;33.33MHz, 1 clk per cycle: 0.03us
@@ -139,40 +499,49 @@ Timer2_Init:
 ; ISR for timer 2.  Runs evere ms ;
 ;---------------------------------;
 Timer2_ISR:
-	clr TF2  ; Timer 2 doesn't clear TF2 automatically. Do it in ISR
-	; Increment the timers for each FSM. That is all we do here!
-	inc FSM1_timer 
-	inc FSM2_timer 
+    push acc
+    push psw
+    push b
+    clr TF2  ; Timer 2 doesn't clear TF2 automatically. Do it in ISR
+    ; Increment the timers for each FSM. That is all we do here!
+    inc FSM1_timer 
+    inc FSM2_timer 
 
-	; 1 ms to 10 ms
-	inc ms10
-	mov a, ms10
-	cjne a, #10, ISR_done
-	mov ms10, #0
+    ; 1 ms to 10 ms
+    inc ms10
+    mov a, ms10
+    cjne a, #10, ISR_done
+    mov ms10, #0
 
-	; 10 ms step counter (0 to 99)
-	inc pwm_step
-	mov a, pwm_step
-	cjne a, #100, do_pwm
-	mov pwm_step, #0
-	inc sec				; 10ms*100 = 1s
+    ; 10 ms step counter (0 to 99)
+    inc pwm_step
+    mov a, pwm_step
+    cjne a, #100, do_pwm
+    mov pwm_step, #0
+    inc sec                ; 10ms*100 = 1s
+    inc sec1
+    inc sec_flag
 
 do_pwm: ; if pwm_step < pwm: ON
-	mov a, pwm_step
-	clr c 
-	subb a, pwm ; a = pwm_step - pwm
-	jc pwm_on	
+    mov a, pwm_step
+    clr c 
+    subb a, pwm ; a = pwm_step - pwm
+    jc pwm_on
 
 pwm_off:
-	clr OVEN_CTRL
-	sjmp ISR_DONE
+    clr OVEN_CTRL
+    sjmp ISR_DONE
 
 pwm_on:
-	setb OVEN_CTRL
+    setb OVEN_CTRL
 
 ISR_done:
-	reti
+    pop b
+    pop psw
+    pop acc
+    reti
 
+    
 ; Look-up table for the 7-seg displays. (Segments are turn on with zero) 
 T_7seg:
     DB 40H, 79H, 24H, 30H, 19H, 12H, 02H, 78H, 00H, 10H
@@ -567,10 +936,14 @@ Display_Parameters_LCD:
 Display_State_LCD: 
 	clr EA
 	
-    WriteCommand(#0x01)
-	
 	Set_Cursor(1, 1)
     Send_Constant_String(#state_msg)
+    Set_Cursor(2, 1)
+    Send_Constant_String(#time_msg1)
+    Set_Cursor(1, 10) 
+    Send_Constant_String(#temp_msg1)
+    Set_Cursor(2, 10)
+    Send_Constant_String(#temp_msg2)
 
 	Set_Cursor(1, 6)
 	mov a, FSM1_state
@@ -632,7 +1005,10 @@ main:
     ; Turn off all the LEDs
     mov LEDRA, #0 ; LEDRA is bit addressable
     mov LEDRB, #0 ; LEDRB is NOT bit addresable
-
+    
+    LCALL InitSerialPort
+    mov ADC_C, #0x80 ; Reset ADC
+	lcall Wait50ms
 
 	; PWM 
 	orl P4MOD, #00000100b   ; set P4.2 as output
@@ -673,10 +1049,10 @@ main:
     mov bcd+4, #0
 
 	; default parameters
-	mov temp_soak, #150
-	mov time_soak, #60
-	mov temp_reflow, #220
-	mov time_reflow, #45
+	mov temp_soak, #70
+	mov time_soak, #15
+	mov temp_reflow, #90
+	mov time_reflow, #20
     
     mov FSM1_state, #0
     mov FSM2_state, #0
@@ -692,20 +1068,41 @@ main:
     mov HEX5, #0xFF
     
 	clr OVEN_CTRL
+	mov ovenTemp, #0
+	mov LEDRA, sec
 	
 	; After initialization the program stays in this 'forever' loop
 loop:
 	lcall FSM1
-	lcall FSM2
+	;lcall FSM2
 
 	mov a, FSM1_state
 	cjne a, #0, Display_State_Normal 
 	
+	mov last_state, FSM1_state
 	lcall Display_Parameters_LCD ; state 0 shows parameters 
 	sjmp loop_continue
 
 Display_State_Normal:
+	mov a, FSM1_state
+	cjne  a, last_state, State_Changed
+	sjmp Skip_Clear
+
+State_Changed: 
+	mov a, last_state
+	cjne a, #0, Skip_Clear 
+	mov a, FSM1_state
+	cjne a, #1, Skip_Clear
+	
+	clr EA
+	WriteCommand(#0x01)
+	lcall Wait50ms
+	setb EA
+
+Skip_Clear: 
+	mov last_state, FSM1_state
 	lcall Display_State_LCD
+	sjmp loop_continue
 
 loop_continue:
 	lcall Wait50ms
@@ -725,7 +1122,7 @@ FSM1_state0:
 	; check keypad
 	lcall Keypad
 	jnc Check_Start_Button ; if no key pressed, check start button
-
+	mov LEDRA, sec
 	; if key pressed, check if it's #
 	mov a, R7
 	cjne a, #0FH, Normal_Key ; if not #, it's normal digit
@@ -776,6 +1173,7 @@ Check_Start_Button:
 	; Display current BCD entry
 	lcall Display_BCD_Entry
 	jb PB6, FSM1_state0_done
+	
 	mov sec1, #0
 	mov sec, #0
 	mov FSM1_state, #1
@@ -784,11 +1182,20 @@ FSM1_state0_done:
 	ret
 
 FSM1_state1:
+	mov a, FSM1_state
 	cjne a, #1, FSM1_state2
+	mov LEDRA, sec
 	mov pwm, #100
+	lcall checkFirst50
+	
+	jnb sec_flag, FSM1_state1_continue
+	clr sec_flag
+	lcall checkTemp
+	
+FSM1_state1_continue:
 	mov a, temp_soak
 	clr c
-	subb a, temp
+	subb a, ovenTemp
 	jnc FSM1_state1_done
 	mov sec1, #0
 	mov FSM1_state, #2
@@ -798,9 +1205,14 @@ FSM1_state1_done:
 FSM1_state2:
 	cjne a, #2, FSM1_state3
 	mov pwm, #20
+	jnb sec_flag, FSM1_state2_continue
+	clr sec_flag
+	lcall checkTemp
+	
+FSM1_state2_continue:
 	mov a, time_soak
 	clr c
-	subb a, sec
+	subb a, sec1
 	jnc FSM1_state2_done
 	mov sec1, #0
 	mov FSM1_state, #3
@@ -810,10 +1222,14 @@ FSM1_state2_done:
 FSM1_state3:
 	cjne a, #3, FSM1_state4
 	mov pwm, #100
-	mov sec, #0
+	jnb sec_flag, FSM1_state3_continue
+	clr sec_flag
+	lcall checkTemp
+	
+FSM1_state3_continue:
 	mov a, temp_reflow
 	clr c
-	subb a, temp
+	subb a, ovenTemp
 	jnc FSM1_state3_done
 	mov sec1, #0
 	mov FSM1_state, #4
@@ -823,9 +1239,14 @@ FSM1_state3_done:
 FSM1_state4:
 	cjne a, #4, FSM1_state5
 	mov pwm, #20
+	jnb sec_flag, FSM1_state4_continue
+	clr sec_flag
+	lcall checkTemp
+	
+FSM1_state4_continue:
 	mov a, time_reflow
 	clr c
-	subb a, sec
+	subb a, sec1
 	jnc FSM1_state4_done
 	mov sec1, #0
 	mov FSM1_state, #5
@@ -835,10 +1256,16 @@ FSM1_state4_done:
 FSM1_state5:
     cjne a, #5, FSM1_state0_jump
     mov pwm, #0
-    mov a, temp
+    jnb sec_flag, FSM1_state5_continue
+	clr sec_flag
+	lcall checkTemp
+	
+FSM1_state5_continue:
+    mov a, ovenTemp
     clr c
     subb a, #60          ; calculate temp - 60
     jc FSM1_state5_to_0  ; if temp < 60, back to State 0
+
     sjmp FSM1_state5_done
 FSM1_state0_jump: 
 	ljmp FSM1_state0
