@@ -5,6 +5,8 @@ $MODMAX10
 $LIST
 
 CLK           EQU 33333333 ; Microcontroller system crystal frequency in Hz
+TIMER0_RATE   EQU 4096     ; 2048Hz squarewave (peak amplitude of CEM-1203 speaker)
+TIMER0_RELOAD EQU ((65536-(CLK/(12*TIMER0_RATE)))) ; The prescaler in the CV-8052 is always 12 unlike the N76E003 where is selectable.
 TIMER2_RATE   EQU 1000     ; 1000Hz, for a timer tick of 1ms
 TIMER2_RELOAD EQU ((65536-(CLK/(12*TIMER2_RATE))))
 
@@ -20,6 +22,9 @@ T2LOAD EQU 256-((FREQ*2)/(32*12*BAUD))
 org 0x0000
     ljmp main
 
+org 0x000B
+	ljmp Timer0_ISR
+
 ; Timer/Counter 2 overflow interrupt vector
 org 0x002B
 	ljmp Timer2_ISR
@@ -32,6 +37,10 @@ milliseconds: ds 2
 ; Each FSM has its own state counter
 FSM1_state:  ds 1 ; Current state of FSM1
 FSM2_state:  ds 1
+
+distance:     ds 2 ; Distance in cm (16-bit)
+too_close:    ds 1 ; Flag: 1 if object too close
+proximity_beep_timer: ds 1 ; Timer for proximity beep interval
 
 temp_soak:   ds 1 ; Target temp / soak temp
 time_soak:   ds 1 ; Soak duration
@@ -76,6 +85,9 @@ Key1_flag:   dbit 1
 Key2_flag:   dbit 1
 Key3_flag:   dbit 1
 sec_flag: 	 dbit 1
+half_sec_flag: dbit 1
+buzzer_active: dbit 1
+proximity_warning: dbit 1
 
 ;temp variable
 mf:		dbit 1
@@ -94,6 +106,11 @@ ELCD_D7       EQU P0.1
 
 OVEN_CTRL     EQU P4.2 ; Control pin connecting to the oven
 PB6           EQU P1.5 ; Start button 
+BUZZER        EQU P2.1
+
+US_TRIGGER    EQU P3.2 ; Trigger pin for ultrasonic sensor
+US_ECHO       EQU P3.3 ; Echo pin for ultrasonic sensor
+FAN		      EQU P
 
 ROW1 EQU P1.2
 ROW2 EQU P1.4
@@ -151,6 +168,17 @@ SendString:
     INC DPTR
     SJMP SendString
 SSDone:
+    ret
+
+Display_STOP_HEX:
+    ; Display "STOP" on HEX displays
+    ; S = 0x92, t = 0x87, O = 0xC0, P = 0x8C
+    mov HEX5, #0x92  ; S
+    mov HEX4, #0x87  ; t
+    mov HEX3, #0xC0  ; O
+    mov HEX2, #0x8C  ; P
+    mov HEX1, #0xFF  ; blank
+    mov HEX0, #0xFF  ; blank
     ret
 
 ;Temperature reading functions
@@ -441,6 +469,8 @@ check50Temp:
 	ret
 	
 stop:
+	lcall Beep_Error
+	lcall Display_STOP_HEX
 	mov FSM1_state, #0
 	ret
 
@@ -469,7 +499,204 @@ Wait25ms_L1:
     djnz R1, Wait25ms_L2 ;74*22.5us=1.665ms
     djnz R0, Wait25ms_L3 ;1.665ms*15=25ms
     ret
+
+Beep_Once:
+	setb buzzer_active
+	clr half_sec_flag
+	setb TR0
+wait_beep: 
+	jnb half_sec_flag, wait_beep
+	clr TR0
+	clr buzzer_active
+	ret
+
+Beep_Loop:
+	setb buzzer_active
+	lcall Beep_Once
+	clr half_sec_flag
+Beep_wait:
+	jnb half_sec_flag, Beep_wait
+	djnz R3, Beep_Loop
+Beep_Done:
+	clr buzzer_active
+	ret
+
+Beep_State_Transition:
+	mov R3, #1
+	lcall Beep_Loop
+	ret
+
+Beep_Success:
+	mov R3, #5
+	lcall Beep_Loop
+	ret
+
+Beep_Error:
+	mov R3, #10
+	lcall Beep_Loop
+	ret
+
+;---------------------------------;
+; Ultrasonic Sensor Functions     ;
+;---------------------------------;
+
+; Wait 10us (approximately)
+Wait_10us:
+    push R0
+    mov R0, #11  ; Adjust for 33MHz clock
+Wait_10us_loop:
+    djnz R0, Wait_10us_loop
+    pop R0
+    ret
+
+; Send 10us trigger pulse
+US_Send_Trigger:
+    clr US_TRIGGER
+    lcall Wait_10us
+    setb US_TRIGGER
+    lcall Wait_10us
+    clr US_TRIGGER
+    ret
+
+; Measure distance using ultrasonic sensor
+; Returns distance in cm in [distance+1, distance+0]
+US_Measure_Distance:
+    push acc
+    push b
+    push psw
     
+	; check if timer 0 running or buzzer buzzer_active
+	jb buzzer_active, US_Skip_Measurement
+	jb TR0, US_Skip_Measurement 
+
+	sjmp US_Safe_To_Measure
+
+US_Skip_Measurement: ; timer 0 or buzzer active so skip 
+	mov distance+0, #0xFF
+	mov distance+1, #0xFF
+	sjmp US_Done
+
+US_Safe_To_Measure:
+	lcall US_Send_Trigger
+	; wait for echo to go high
+	mov R0, #0
+
+US_Wait_Echo_High:
+    jb US_ECHO, US_Echo_High   ; if high, jump ahead
+    djnz R0, US_Wait_Echo_High ; otherwise, keep waiting
+    sjmp US_Timeout            ; if wait too long, timeout
+    
+US_Echo_High:
+    ; Configure Timer 0 for distance measurement (16-bit mode)
+    push TMOD	; save current timer mode
+    mov a, TMOD
+    anl a, #0xF0  ; clear Timer 0 bits
+    orl a, #0x01  ; set Timer 0 to mode 1 (16-bit timer)
+    mov TMOD, a
+    
+    ; Initialize and start Timer 0
+    clr TF0
+    mov TH0, #0
+    mov TL0, #0
+    setb TR0
+    
+    ; Wait for echo to go low (with timeout)
+    mov R0, #0
+US_Wait_Echo_Low:
+    jnb US_ECHO, US_Echo_Low
+    mov a, TH0
+    cjne a, #0xFF, US_No_Timeout
+US_No_Timeout:
+    jnc US_Timeout_Restore
+    djnz R0, US_Wait_Echo_Low
+    sjmp US_Timeout_Restore
+    
+US_Echo_Low:
+    ; Stop timer
+    clr TR0
+    
+    ; Calculate distance
+    ; Distance (cm) = (Time * Speed of Sound) / 2
+    ; With 33MHz clock and /12 prescaler: each tick = 0.36us
+    ; Distance ≈ Timer_Value / 162
+    ; We'll use approximation: distance = TH0 (high byte gives us rough cm)
+    
+    mov a, TL0
+    mov R0, a
+    mov a, TH0
+    mov R1, a
+    
+    ; Simple approximation: distance ≈ TH0
+    mov a, R1
+    mov distance+1, #0
+    mov distance+0, a
+    
+    ; check if too close (less than 8 cm)
+    mov a, distance+0
+    clr c
+    subb a, #8		; can test w different distances
+    jnc US_Not_Too_Close
+    
+    ; Too close!
+    setb proximity_warning
+    sjmp US_Restore_Timer
+    
+US_Not_Too_Close:
+    clr proximity_warning
+    sjmp US_Restore_Timer
+
+US_Timeout_Restore:
+    clr TR0		; stop timer
+US_Timeout:
+    ; no object detected or too far
+    mov distance+0, #0xFF
+    mov distance+1, #0xFF
+    clr proximity_warning
+    
+US_Restore_Timer:
+    ; Restore Timer 0 to buzzer mode
+    pop TMOD		; restore original timer mode
+    mov TH0, #high(TIMER0_RELOAD)
+    mov TL0, #low(TIMER0_RELOAD)
+    
+US_Done:
+    pop psw
+    pop b
+    pop acc
+    ret
+
+; Check proximity every 2s (to not interfere w buzzer)
+; and beep periodically if needed
+Check_Proximity:
+    ; Only check if oven is running (not in state 0)
+    mov a, FSM1_state
+    cjne a, #0, Check_Prox_Continue
+    clr proximity_warning
+    ret
+    
+Check_Prox_Continue:
+	mov a, sec
+	anl a, #01H			; check odd/even
+	jnz Proximity_Done	; skip if odd
+
+    lcall US_Measure_Distance ; measure distance
+    
+    ; If proximity warning is set, beep periodically
+    jnb proximity_warning, No_Proximity_Warning
+    
+    ; Quick double beep for warning (using R3)
+    push acc
+    mov R3, #2
+    lcall Beep_Loop
+    pop acc
+    sjmp Proximity_Done
+    
+No_Proximity_Warning:
+    sjmp Proximity_Done
+    
+Proximity_Done:
+    ret
+
 ;---------------------------------;
 ; UI/UX - LCD Messages            ;
 ;---------------------------------;
@@ -478,6 +705,40 @@ state_msg:   db 'State', 0
 temp_msg1:   db 'TO', 0
 temp_msg2:   db 'TJ', 0
 time_msg1:   db 'Clk', 0
+
+;---------------------------------;
+; Routine to initialize the ISR   ;
+; for timer 0                     ;
+;---------------------------------;
+Timer0_Init:
+	mov a, TMOD
+	anl a, #0xf0 ; Clear the bits for timer 0
+	orl a, #0x01 ; Configure timer 0 as 16-timer
+	mov TMOD, a
+	mov TH0, #high(TIMER0_RELOAD)
+	mov TL0, #low(TIMER0_RELOAD)
+	; Enable the timer and interrupts
+    setb ET0  ; Enable timer 0 interrupt
+    setb TR0  ; Start timer 0
+	ret
+
+;---------------------------------;
+; ISR for timer 0.  Set to execute;
+; every 1/4096Hz to generate a    ;
+; 2048 Hz square wave at pin P3.7 ;
+;---------------------------------;
+Timer0_ISR:
+	push acc
+    push psw
+    push b
+	;clr TF0  ; According to the data sheet this is done for us already.
+	mov TH0, #high(TIMER0_RELOAD) ; Timer 0 doesn't have autoreload in the CV-8052
+	mov TL0, #low(TIMER0_RELOAD)
+	cpl BUZZER
+	pop b
+    pop psw
+    pop acc
+	reti
 
 ;---------------------------------;
 ; Routine to initialize the ISR   ;
@@ -516,11 +777,15 @@ Timer2_ISR:
     ; 10 ms step counter (0 to 99)
     inc pwm_step
     mov a, pwm_step
-    cjne a, #100, do_pwm
+    
+    cjne a, #50, check_full_sec
+    cpl half_sec_flag
+check_full_sec: 
+	cjne a, #100, do_pwm
     mov pwm_step, #0
     inc sec                ; 10ms*100 = 1s
     inc sec1
-    inc sec_flag
+    cpl half_sec_flag
 
 do_pwm: ; if pwm_step < pwm: ON
     mov a, pwm_step
@@ -998,8 +1263,10 @@ Display_State_LCD:
 ; loop.                           ;
 ;---------------------------------;
 main:
+	
 	; Initialization of hardware
     mov SP, #0x7F
+    lcall Timer0_Init
     lcall Timer2_Init
 	clr EA
     ; Turn off all the LEDs
@@ -1009,10 +1276,21 @@ main:
     LCALL InitSerialPort
     mov ADC_C, #0x80 ; Reset ADC
 	lcall Wait50ms
+	
+	clr TR0
 
 	; PWM 
 	orl P4MOD, #00000100b   ; set P4.2 as output
 	clr OVEN_CTRL           ; oven initially off
+	clr BUZZER
+
+	; ultrasonic sensor 
+ 	orl P3MOD, #00000100b   ; set trigger as output
+    anl P3MOD, #11110111b   ; set echo as input
+    clr US_TRIGGER
+    mov proximity_beep_timer, #0
+    clr proximity_warning
+
 	mov pwm, #0             ; start w/ 0% duty
 	mov sec, #0             ; start seconds at 0
 	mov ms10, #0
@@ -1022,6 +1300,7 @@ main:
     ; Configure the pins connected to the LCD as outputs
 	mov P0MOD, #10101010b ; P0.1, P0.3, P0.5, P0.7 are outputs.  ('1' makes the pin output)
     mov P1MOD, #10000010b ; P1.7 and P1.1 are outputs
+    mov P2MOD, #00000010b
 
 	lcall Configure_Keypad_Pins
     
@@ -1074,14 +1353,19 @@ main:
 	; After initialization the program stays in this 'forever' loop
 loop:
 	lcall FSM1
-	;lcall FSM2
+
+	lcall Check_Proximity
 
 	mov a, FSM1_state
 	cjne a, #0, Display_State_Normal 
-	
-	mov last_state, FSM1_state
-	lcall Display_Parameters_LCD ; state 0 shows parameters 
-	sjmp loop_continue
+
+	jnb proximity_warning, loop_no_prox
+    clr TR0  ; Make sure buzzer is off in state 0
+
+loop_no_prox:
+    mov last_state, FSM1_state
+    lcall Display_Parameters_LCD ; state 0 shows parameters 
+    sjmp loop_continue
 
 Display_State_Normal:
 	mov a, FSM1_state
@@ -1089,6 +1373,7 @@ Display_State_Normal:
 	sjmp Skip_Clear
 
 State_Changed: 
+	lcall Beep_Once
 	mov a, last_state
 	cjne a, #0, Skip_Clear 
 	mov a, FSM1_state
@@ -1106,9 +1391,9 @@ Skip_Clear:
 
 loop_continue:
 	lcall Wait50ms
-	lcall Wait50ms
-	lcall Wait50ms
-	lcall Wait50ms
+	;lcall Wait50ms
+	;lcall Wait50ms
+	;lcall Wait50ms
 	sjmp loop
 
 ;-------------------------------------------------------------------------------
@@ -1184,12 +1469,15 @@ FSM1_state0_done:
 FSM1_state1:
 	mov a, FSM1_state
 	cjne a, #1, FSM1_state2
+
+	; check stop button
+	jnb PB6, lj_FSM1_stop_to_state0
+
 	mov LEDRA, sec
 	mov pwm, #100
 	lcall checkFirst50
 	
-	jnb sec_flag, FSM1_state1_continue
-	clr sec_flag
+	jnb half_sec_flag, FSM1_state1_continue
 	lcall checkTemp
 	
 FSM1_state1_continue:
@@ -1199,14 +1487,21 @@ FSM1_state1_continue:
 	jnc FSM1_state1_done
 	mov sec1, #0
 	mov FSM1_state, #2
+
 FSM1_state1_done:
 	ret
+	
+lj_FSM1_stop_to_state0: 
+	ljmp FSM1_stop_to_state0
 
 FSM1_state2:
 	cjne a, #2, FSM1_state3
+
+	; check stop button
+	jnb PB6, lj_FSM1_stop_to_state0
+	
 	mov pwm, #20
-	jnb sec_flag, FSM1_state2_continue
-	clr sec_flag
+	jnb half_sec_flag, FSM1_state2_continue
 	lcall checkTemp
 	
 FSM1_state2_continue:
@@ -1221,9 +1516,12 @@ FSM1_state2_done:
 	
 FSM1_state3:
 	cjne a, #3, FSM1_state4
+
+	; check stop button
+	jnb PB6, FSM1_stop_to_state0
+
 	mov pwm, #100
-	jnb sec_flag, FSM1_state3_continue
-	clr sec_flag
+	jnb half_sec_flag, FSM1_state3_continue
 	lcall checkTemp
 	
 FSM1_state3_continue:
@@ -1238,9 +1536,12 @@ FSM1_state3_done:
 
 FSM1_state4:
 	cjne a, #4, FSM1_state5
+
+	; check stop button
+	jnb PB6, FSM1_stop_to_state0
+	
 	mov pwm, #20
-	jnb sec_flag, FSM1_state4_continue
-	clr sec_flag
+	jnb half_sec_flag, FSM1_state4_continue
 	lcall checkTemp
 	
 FSM1_state4_continue:
@@ -1250,14 +1551,15 @@ FSM1_state4_continue:
 	jnc FSM1_state4_done
 	mov sec1, #0
 	mov FSM1_state, #5
+	lcall Beep_Once
+
 FSM1_state4_done:
 	ret
 	
 FSM1_state5:
     cjne a, #5, FSM1_state0_jump
     mov pwm, #0
-    jnb sec_flag, FSM1_state5_continue
-	clr sec_flag
+    jnb half_sec_flag, FSM1_state5_continue
 	lcall checkTemp
 	
 FSM1_state5_continue:
@@ -1266,45 +1568,54 @@ FSM1_state5_continue:
     subb a, #60          ; calculate temp - 60
     jc FSM1_state5_to_0  ; if temp < 60, back to State 0
 
+	mov bcd+0, #0
+	mov bcd+1, #0
+	mov bcd+2, #0
+	mov bcd+3, #0
+	mov bcd+4, #0
+
+	clr EA
+	WriteCommand(#0x01)
+	lcall Wait50ms
+	setb EA
+
     sjmp FSM1_state5_done
+	
 FSM1_state0_jump: 
 	ljmp FSM1_state0
 FSM1_state5_to_0:
 	mov sec1, #0
     mov FSM1_state, #0
+    lcall Beep_Success
 FSM1_state5_done:
     ret
+	
+FSM1_stop_to_state0: 
+	mov pwm, #0
 
-; sec: timer from interrupt
-; temp: data from the sensor
-; pwm: percentage of power
+	lcall Display_STOP_HEX
 
-FSM2:
-    mov a, FSM1_state
+	lcall Wait50ms
+	lcall Wait50ms
+	lcall Wait50ms
 
-FSM2_state0_entry:
-    cjne a, #0, FSM2_state1_entry
-    ret
+	mov sec1, #0
+	mov sec, #0
+	mov FSM1_state, #0
 
-FSM2_state1_entry:
-    cjne a, #1, FSM2_state2_entry
-	mov FSM1_state, #1
-    ret
-
-FSM2_state2_entry:
-    cjne a, #2, FSM2_state3_entry
-    ret
-
-FSM2_state3_entry:
-    cjne a, #3, FSM2_state4_entry
-    ret
+	; Clear BCD
+    mov bcd+0, #0
+    mov bcd+1, #0
+    mov bcd+2, #0
+    mov bcd+3, #0
+    mov bcd+4, #0
     
-FSM2_state4_entry:
-    cjne a, #4, FSM2_state5_entry
-    ret
+    ; Clear HEX displays\
+    mov HEX0, #0xFF
+    mov HEX1, #0xFF
+    mov HEX2, #0xFF
+    mov HEX3, #0xFF
+    mov HEX4, #0xFF
+    mov HEX5, #0xFF
 
-FSM2_state5_entry:
-    cjne a, #5, FSM2_state0_entry
-    ret
-
-END
+	ret
