@@ -59,12 +59,13 @@ VAL_LM4040: ds 2
 VAL_LM335:  ds 2
 VAL_THERM:  ds 2
 
+servo_pwm:  ds 1
+servo_ms:   ds 1
 
 ; PWM generator
 ms10:		 ds 1 ; 1ms -> 10ms
 pwm_step:	 ds 1 ; 0..99 (10ms steps over 1 second interval)
 T_target:	 ds 1 ; temperature parameter
-
 
 ; keypad storage
 bcd:	ds 5 ;
@@ -102,6 +103,8 @@ OVEN_CTRL     EQU P4.2 ; Control pin connecting to the oven
 PB6           EQU P1.5 ; Start button 
 BUZZER        EQU P2.1
 
+SERVOMOTOR    EQU P4.3
+
 ROW1 EQU P1.2
 ROW2 EQU P1.4
 ROW3 EQU P1.6
@@ -135,30 +138,21 @@ InitSerialPort:
 	ret
 
 Display_Hot_LCD:
-	Set_Cursor(1,12)
 
-	
-	mov a, bcd+3
-	anl a, #0FH
-	orl a, #'0'
-	lcall ?WriteData
-
-	mov a, bcd+2
-	swap a
-	anl a, #0FH
-	orl a, #'0'
-	lcall ?WriteData
+	Set_Cursor(1,13)
 	
 	mov a, bcd+2
 	anl a, #0FH
 	orl a, #'0'
-	lcall ?WriteData
-	
-	mov a, #'.'
 	lcall ?WriteData
 	
 	mov a, bcd+1
 	swap a
+	anl a, #0FH
+	orl a, #'0'
+	lcall ?WriteData
+	
+	mov a, bcd+1
 	anl a, #0FH
 	orl a, #'0'
 	lcall ?WriteData
@@ -169,13 +163,13 @@ Display_Hot_LCD:
 Display_Cold_LCD:
 	Set_Cursor(2,12)
 
-	mov a, bcd+2
+	mov a, bcd+1
 	swap a
 	anl a, #0FH
 	orl a, #'0'
 	lcall ?WriteData
-	
-	mov a, bcd+2
+
+	mov a, bcd+1
 	anl a, #0FH
 	orl a, #'0'
 	lcall ?WriteData
@@ -183,13 +177,13 @@ Display_Cold_LCD:
 	mov a, #'.'
 	lcall ?WriteData
 	
-	mov a, bcd+1
+	mov a, bcd+0
 	swap a
 	anl a, #0FH
 	orl a, #'0'
 	lcall ?WriteData
 	
-	mov a, bcd+1
+	mov a, bcd+0
 	anl a, #0FH
 	orl a, #'0'
 	lcall ?WriteData
@@ -225,36 +219,6 @@ Display_STOP_HEX:
 
 ;Temperature reading functions
 Display_Temp_Serial:
-	mov a, bcd+3
-	swap a
-	anl a, #0FH
-	orl a, #'0'
-	lcall putchar
-	
-	mov a, bcd+3
-	anl a, #0FH
-	orl a, #'0'
-	lcall putchar
-
-	mov a, bcd+2
-	swap a
-	anl a, #0FH
-	orl a, #'0'
-	lcall putchar
-	
-	mov a, bcd+2
-	anl a, #0FH
-	orl a, #'0'
-	lcall putchar
-	
-	mov a, #'.'
-	lcall putchar
-	
-	mov a, bcd+1
-	swap a
-	anl a, #0FH
-	orl a, #'0'
-	lcall putchar
 	
 	mov a, bcd+1
 	anl a, #0FH
@@ -315,46 +279,45 @@ Display_temp_7seg:
 	mov dptr, #myLUT
 	mov HEX5, #0xFF
 	
-	mov a, bcd+3
-	anl a, #0FH
-	movc a, @a+dptr
-	mov HEX4, a
+	mov dptr, #myLUT
+	mov HEX4, #0xFF
 	
-	mov a, bcd+2
-	swap a
-	anl a, #0FH
-	movc a, @a+dptr
-	mov HEX3, a
+	mov dptr, #myLUT
+	mov HEX3, #0xFF
 	
-	mov a, bcd+2
-	anl a, #0FH
-	movc a, @a+dptr
-	anl a, #0x7f ; Turn on decimal point
-	mov HEX2, a
-
 	mov a, bcd+1
+	anl a, #0FH
+	movc a, @a+dptr
+	mov HEX2, a
+	
+	mov a, bcd+0
 	swap a
 	anl a, #0FH
 	movc a, @a+dptr
 	mov HEX1, a
 	
-	mov a, bcd+1
+	
+	mov a, bcd+0
 	anl a, #0FH
 	movc a, @a+dptr
+	;anl a, #0x7f ; Turn on decimal point
 	mov HEX0, a
+
+
+	
 	
 	ret
 	
 TEMP_BCD2HEX:
 	; hundreds
-    mov a, bcd+3
+    mov a, bcd+1
     anl a, #0x0F
     mov b, #100
     mul ab
     mov R2, a
 
     ; tens
-    mov a, bcd+2
+    mov a, bcd+0
     swap a
     anl a, #0x0F
     mov b, #10
@@ -362,7 +325,7 @@ TEMP_BCD2HEX:
     add a, R2
 
     ; ones
-    mov b, bcd+2
+    mov b, bcd+0
     anl b, #0x0F
     add a, b   ; final value in A
     mov ovenTemp, a
@@ -372,132 +335,106 @@ TEMP_BCD2HEX:
 checkTemp:	
 	mov ADC_C, #0x03
 	lcall Wait50ms
+	;lcall Read_ADC
 	
-	mov R7, #16
-	mov VAL_LM4040+0, #0
-	mov VAL_LM4040+1, #0
+	mov VAL_LM4040+0, ADC_L
+	mov VAL_LM4040+1, ADC_H
 	
-	loop_ref:
-		lcall Read_ADC
-		mov a, R0
-		add a, VAL_LM4040+0
-		mov VAL_LM4040+0, a
-		mov a, R1
-		addc a, VAL_LM4040+1
-		mov VAL_LM4040+1, a
-		djnz R7, loop_ref
-		
-	mov ADC_C, #0x05
-	lcall Wait50ms
-		
-	mov R7, #16
-	mov VAL_THERM+0, #0
-	mov VAL_THERM+1, #0
-	
-	loop_therm:
-	lcall Read_ADC
-	; Save result for later use
-	mov a, R0
-	add a, VAL_THERM+0
-	mov VAL_THERM+0, a
-	mov a, R1
-	addc a, VAL_THERM+1
-	mov VAL_THERM+1, a
-	djnz R7, loop_therm
-	
-	; CHN2 - LM335 Temperature Sensor
-	;mov ADC_C, #0x80 ; Reset ADC
-	;lcall Wait50ms
 	mov ADC_C, #0x04
 	lcall Wait50ms
-	
-	mov R7, #16
-	mov VAL_LM335+0, #0
-	mov VAL_LM335+1, #0
-	
-	loop_amb:
-	lcall Read_ADC
-	; Save result for later use
-	mov a, R0
-	add a, VAL_LM335+0
-	mov VAL_LM335+0, a
-	mov a, R1
-	addc a, VAL_LM335+1
-	mov VAL_LM335+1, a
-	djnz R7, loop_amb
-	
-	; Perform voltage and temperature conversions to send to LCD and Serial
-	mov x+0, VAL_LM335+0
-	mov x+1, VAL_LM335+1
-	mov x+2, #0
+	;lcall Read_ADC
 	mov x+3, #0
-	Load_y(41100) ; The MEASURED voltage reference: 4.0959V, with 4 decimal places
+	mov x+2, #0
+	mov x+1, ADC_H
+	mov x+0, ADC_L
+	
+	Load_y(41100)
 	lcall mul32
-	; Retrive the ADC LM4040 value
 	mov y+0, VAL_LM4040+0
 	mov y+1, VAL_LM4040+1
-	; Pad other bits with zero
 	mov y+2, #0
 	mov y+3, #0
 	lcall div32
-
-	; Convert to temperature (LM335 Voltage)
-	Load_y(27300)
+	Load_y(27315)
 	lcall sub32
+	
+	lcall hex2bcd
+	lcall Display_cold_lcd
+	
+	mov VAL_LM335+1, x+1
+	mov VAL_LM335+0, x+0
+	
+	mov ADC_C, #0x05
+	lcall Wait50ms
+	mov x+3, #0
+	mov x+2, #0
+	mov x+1, ADC_H
+	mov x+0, ADC_L
+	
+	Load_y(5000)
+	lcall mul32
+	Load_y(4096)
+	lcall div32
+	
+	Load_y(1000)
+	lcall mul32
+	Load_y(12300)
+	lcall div32
 	Load_y(100)
 	lcall mul32
-
-	mov amb_tmp+3, x+3
-	mov amb_tmp+2, x+2
-	mov amb_tmp+1, x+1
-	mov amb_tmp+0, x+0
 	
-	lcall hex2bcd
-	lcall Display_Cold_LCD
+	lcall Display_hot_lcd
 	
-	mov x+0, VAL_THERM+0
-	mov x+1, VAL_THERM+1
-	 ;Pad other bits with zero
-	mov x+2, #0
-	mov x+3, #0
-	Load_y(41100) ; The MEASURED voltage reference: 4.0959V, with 4 decimal places
-	lcall mul32
-	; Retrive the ADC LM4040 value
-	mov y+0, VAL_LM4040+0
-	mov y+1, VAL_LM4040+1
-	; Pad other bits with zero
+	mov y+1, VAL_LM335+1
+	mov y+0, VAL_LM335+0
 	mov y+2, #0
 	mov y+3, #0
-	lcall div32
-	Load_y(81)
-	lcall mul32
-	
-	mov therm_tmp+3, x+3
-	mov therm_tmp+2, x+2
-	mov therm_tmp+1, x+1
-	mov therm_tmp+0, x+0
-	
-	lcall hex2bcd
-	lcall Display_Hot_LCD
-	
-	mov x+0, amb_tmp+0
-	mov x+1, amb_tmp+1
-	mov x+2, amb_tmp+2
-	mov x+3, amb_tmp+3
-
-	mov y+0, therm_tmp+0
-	mov y+1, therm_tmp+1
-	mov y+2, therm_tmp+2
-	mov y+3, therm_tmp+3
 	
 	lcall add32
 	lcall hex2bcd
-	lcall Display_temp_7seg
+
+	Load_y(100)
+	lcall div32
+
+	mov therm_tmp+3, x+3
+	mov therm_tmp+2, x+2
+	mov therm_tmp+1, x+1
+	mov therm_tmp+0, x+0	
+	
+
+	lcall hex2bcd
 	lcall TEMP_BCD2HEX
+
+	mov a, ovenTemp
+	add a, #3
+	mov ovenTemp, a
+	Load_y(3)
+	lcall add32
+	lcall hex2bcd
+	lcall Display_temp_7seg
 	lcall Display_Temp_Serial
 
 	ret
 	
+	
+checkGreater:
+	mov a, #160
+	clr c
+	subb a, ovenTemp
+	jnc notadd3
+	mov a, ovenTemp
+	add a, #3
+	mov ovenTemp, a
+	
+	Load_y(3)
+	lcall add32
+	lcall hex2bcd
+	ret
+	
+notadd3:
+	ret
+	
+
 checkFirst50:
 	mov a, sec
 	cjne a, #60, check50skip
@@ -649,6 +586,24 @@ Timer2_ISR:
     inc FSM1_timer 
     inc FSM2_timer 
 
+	inc servo_ms
+	mov a, servo_ms
+
+	cjne a, #20, servo_check_pulse
+	mov servo_ms, #0
+	setb SERVOMOTOR
+	sjmp servo_done
+
+servo_check_pulse: 
+	clr c
+	subb a, servo_pwm
+	jc servo_done
+	clr SERVOMOTOR
+servo_done: 
+	mov a, servo_ms
+	add a, servo_pwm
+	subb a, servo_pwm
+
     ; 1 ms to 10 ms
     inc ms10
     mov a, ms10
@@ -761,7 +716,7 @@ Hex_to_bcd_8bit:
 
 ; Convert 3-digit BCD to hex
 BCD3_to_Hex:
-	; hundreds
+; hundreds
     mov a, bcd+1
     anl a, #0x0F
     mov b, #100
@@ -1161,6 +1116,12 @@ main:
 	
 	clr TR0
 
+	; servo PWM
+	orl P4MOD, #00001100b   ; P4.2 and P4.3 outputs
+	clr P4.3                ; servo low initial
+	mov servo_ms, #0
+	mov servo_pwm, #1 
+
 	; PWM 
 	orl P4MOD, #00000100b   ; set P4.2 as output
 	clr OVEN_CTRL           ; oven initially off
@@ -1202,10 +1163,10 @@ main:
     mov bcd+4, #0
 
 	; default parameters
-	mov temp_soak, #70
-	mov time_soak, #15
-	mov temp_reflow, #90
-	mov time_reflow, #20
+	mov temp_soak, #150
+	mov time_soak, #60
+	mov temp_reflow, #217
+	mov time_reflow, #30
     
     mov FSM1_state, #0
     mov FSM2_state, #0
@@ -1332,6 +1293,7 @@ Check_Start_Button:
 	mov sec, #0
 	mov FSM1_state, #1
 	lcall Beep_Once
+	mov servo_pwm, #2
 	
 FSM1_state0_done:
 	ret
