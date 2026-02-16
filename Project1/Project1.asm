@@ -47,13 +47,13 @@ sec1:        ds 1
 ovenTemp:    ds 1 ; Sensor interrupt
 pwm:         ds 1 ; PWM output
 last_state:  ds 1 ; prev state of fsm 1
+rx_count:    ds 1
 
 ;Temperature variables
 x:   ds 4
 y:   ds 4
 amb_tmp: ds 4
 therm_tmp: ds 4
-;bcd: ds 5
 
 VAL_LM4040: ds 2
 VAL_LM335:  ds 2
@@ -61,6 +61,8 @@ VAL_THERM:  ds 2
 
 servo_pwm:  ds 1
 servo_ms:   ds 1
+servo_pwm1: ds 1
+servo_ms1:  ds 1
 
 ; PWM generator
 ms10:		 ds 1 ; 1ms -> 10ms
@@ -104,6 +106,9 @@ PB6           EQU P1.5 ; Start button
 BUZZER        EQU P2.1
 
 SERVOMOTOR    EQU P4.3
+SERVOMOTOR1   EQU P4.1
+SPEAKER       EQU P4.6
+FAN           EQU P4.0
 
 ROW1 EQU P1.2
 ROW2 EQU P1.4
@@ -137,22 +142,51 @@ InitSerialPort:
 	mov SCON, #52H
 	ret
 
+
+checkPy:
+    cjne a, #'d', checkSound
+    
+    inc rx_count
+    mov a, rx_count
+    cjne a, #3, checkSound
+    
+    mov FSM1_state, #1
+    clr EA
+	WriteCommand(#0x01)
+	lcall Wait50ms
+	setb EA
+	mov rx_count, #0
+    sjmp endPy
+checkSound: 
+	cjne a, #'r', endPy
+	setb SPEAKER
+	clr SPEAKER
+    endPy:
+    ret
+
+mrrow:
+    jnb RI, end_mrrow
+    clr RI
+    mov a, SBUF
+    end_mrrow:
+    ret
+    
 Display_Hot_LCD:
 
 	Set_Cursor(1,13)
 	
-	mov a, bcd+2
+	mov a, bcd+1
 	anl a, #0FH
 	orl a, #'0'
 	lcall ?WriteData
 	
-	mov a, bcd+1
+	mov a, bcd+0
 	swap a
 	anl a, #0FH
 	orl a, #'0'
 	lcall ?WriteData
 	
-	mov a, bcd+1
+	mov a, bcd+0
 	anl a, #0FH
 	orl a, #'0'
 	lcall ?WriteData
@@ -303,9 +337,6 @@ Display_temp_7seg:
 	;anl a, #0x7f ; Turn on decimal point
 	mov HEX0, a
 
-
-	
-	
 	ret
 	
 TEMP_BCD2HEX:
@@ -383,7 +414,18 @@ checkTemp:
 	Load_y(100)
 	lcall mul32
 	
+	Load_y(100)
+	lcall div32
+	Load_y(3)
+	lcall add32
+	
+	lcall hex2bcd
 	lcall Display_hot_lcd
+	
+	Load_y(3)
+	lcall sub32
+	Load_y(100)
+	lcall mul32
 	
 	mov y+1, VAL_LM335+1
 	mov y+0, VAL_LM335+0
@@ -603,6 +645,24 @@ servo_done:
 	mov a, servo_ms
 	add a, servo_pwm
 	subb a, servo_pwm
+	
+	inc servo_ms1
+	mov a, servo_ms1
+
+	cjne a, #20, servo_check_pulse1
+	mov servo_ms1, #0
+	setb SERVOMOTOR1
+	sjmp servo_done1
+
+servo_check_pulse1: 
+	clr c
+	subb a, servo_pwm1
+	jc servo_done1
+	clr SERVOMOTOR1
+servo_done1: 
+	mov a, servo_ms1
+	add a, servo_pwm1
+	subb a, servo_pwm1
 
     ; 1 ms to 10 ms
     inc ms10
@@ -616,6 +676,7 @@ servo_done:
     
     cjne a, #50, check_full_sec
     cpl half_sec_flag
+    
 check_full_sec: 
 	cjne a, #100, do_pwm
     mov pwm_step, #0
@@ -1070,7 +1131,7 @@ Display_State_LCD:
 	
 	; ones digit
 	mov a, R0
-	anl a, #0x0F
+	anl a, #0x0F	
 	add a, #0x30
 	lcall ?WriteData
 	
@@ -1117,10 +1178,13 @@ main:
 	clr TR0
 
 	; servo PWM
-	orl P4MOD, #00001100b   ; P4.2 and P4.3 outputs
+	orl P4MOD, #11001111b   ; P4.2 and P4.3 outputs
 	clr P4.3                ; servo low initial
 	mov servo_ms, #0
-	mov servo_pwm, #1 
+	
+	mov servo_ms1, #0
+	mov servo_pwm, #2
+	mov servo_pwm1, #2
 
 	; PWM 
 	orl P4MOD, #00000100b   ; set P4.2 as output
@@ -1131,6 +1195,8 @@ main:
 	mov ms10, #0
 	mov pwm_step, #0
 	mov last_state, #0FFh	; force first LCD updatew
+    clr SPEAKER
+    clr FAN
     
     ; Configure the pins connected to the LCD as outputs
 	mov P0MOD, #10101010b ; P0.1, P0.3, P0.5, P0.7 are outputs.  ('1' makes the pin output)
@@ -1189,6 +1255,8 @@ main:
 loop:
 	lcall FSM1
 	;lcall FSM2
+	
+	setb FAN
 
 	mov a, FSM1_state
 	cjne a, #0, Display_State_Normal 
@@ -1233,6 +1301,9 @@ FSM1:
 FSM1_state0:
 	cjne a, #0, FSM1_state1
 	mov pwm, #0
+	
+	lcall mrrow
+	lcall checkPy
 
 	; check keypad
 	lcall Keypad
@@ -1241,6 +1312,7 @@ FSM1_state0:
 	; if key pressed, check if it's #
 	mov a, R7
 	cjne a, #0FH, Normal_Key ; if not #, it's normal digit
+	;setb FAN
 
 	; SW0 = temp_sock, SW1 = time_soak, SW2 = temp_reflow, SW3= time_reflow
 	jb SWA.0, Save_Temp_Soak
@@ -1293,7 +1365,10 @@ Check_Start_Button:
 	mov sec, #0
 	mov FSM1_state, #1
 	lcall Beep_Once
-	mov servo_pwm, #2
+	
+	;setb SPEAKER
+	setb FAN
+	;clr SPEAKER
 	
 FSM1_state0_done:
 	ret
@@ -1354,7 +1429,7 @@ FSM1_state3:
 	cjne a, #3, FSM1_state4
 
 	; check stop button
-	jnb PB6, FSM1_stop_to_state0
+	jnb PB6, lj_FSM1_stop_to_state0
 
 	mov pwm, #100
 	jnb sec_flag, FSM1_state3_continue
@@ -1368,6 +1443,8 @@ FSM1_state3_continue:
 	jnc FSM1_state3_done
 	mov sec1, #0
 	mov FSM1_state, #4
+	setb SPEAKER
+	clr SPEAKER
 	lcall Beep_Once
 FSM1_state3_done:
 	ret
@@ -1390,6 +1467,9 @@ FSM1_state4_continue:
 	jnc FSM1_state4_done
 	mov sec1, #0
 	mov FSM1_state, #5
+	mov servo_pwm, #1 
+	mov servo_pwm1, #1
+	setb FAN
 	lcall Beep_Once
 
 FSM1_state4_done:
@@ -1405,6 +1485,7 @@ FSM1_state5:
 FSM1_state5_continue:
     mov a, ovenTemp
     clr c
+
     subb a, #60          ; calculate temp - 60
     jc FSM1_state5_to_0  ; if temp < 60, back to State 0
 
@@ -1414,11 +1495,6 @@ FSM1_state5_continue:
 	mov bcd+3, #0
 	mov bcd+4, #0
 
-	clr EA
-	WriteCommand(#0x01)
-	lcall Wait50ms
-	setb EA
-
     sjmp FSM1_state5_done
 	
 FSM1_state0_jump: 
@@ -1427,6 +1503,11 @@ FSM1_state5_to_0:
 	mov sec1, #0
     mov FSM1_state, #0
     lcall Beep_Success
+    clr EA
+	WriteCommand(#0x01)
+	lcall Wait50ms
+	setb EA
+    
 FSM1_state5_done:
     ret
 	
@@ -1449,6 +1530,11 @@ FSM1_stop_to_state0:
     mov bcd+2, #0
     mov bcd+3, #0
     mov bcd+4, #0
+    
+	clr EA
+	WriteCommand(#0x01)
+	lcall Wait50ms
+	setb EA
     
     ; Clear HEX displays\
     mov HEX0, #0xFF
