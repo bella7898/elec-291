@@ -22,3 +22,17 @@
   - calculates the line of best fit and displays that as a dashed red line
   - able to write the data to a .csv file
 ## Project 1 - Reflow Oven Controller
+- requirements: 
+  - program a fsm capable of following a profile for soldering surface mount pcbs and interface with a ssr box that controls a toaster oven to control the temperature
+  - read the temperature of the oven with a k-type thermocouple wire and plot the temperatures in a stripchart with a Python program
+  - have settable parameters for soak time/temp and reflow time/temp
+  - implement a stop and start button
+  - terminate the program if the oven does not reach 50℃ within the first 60s
+  - maintain thermocouple accuracy (±3℃)
+  - display using the built-in 7 segment display on the DE10-Lite and LCD display
+  - have sound feedback using a magnetic buzzer
+- additional features:
+  - user can set parameters in state 0 of the FSM using a 4x4 Keypad
+  - speaker and microphone that can record a short audio message and play it back at a specific time
+  - servo motors open the door of the oven when the state transitions from 4 - 5 to accelerate cooling
+  - OpenCV computer vision implementation using a pretrained YOLO hand-gestures model
