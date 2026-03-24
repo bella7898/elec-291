@@ -7,20 +7,57 @@
 #include "lcd.h"
 #include <util/delay.h>
 
-// Joystick
 #define THRESHOLD 200
 #define CENTER    512
 
-#define PIN_PERIOD (PINB & 0b00000010)
+// Button pin macros
+#define BTN_PD3  (!(PIND & (1 << PD3)))
+#define BTN_PD5  (!(PIND & (1 << PD5)))
+#define BTN_PD6  (!(PIND & (1 << PD6)))
+#define BTN_PB1  (!(PINB & (1 << PB1)))
+
+volatile uint8_t carrier_enabled = 0;
+
+ISR(TIMER2_COMPA_vect)
+{
+    if (carrier_enabled && !(PIND & (1 << PD1)))
+        PORTB ^= (1 << PB2);
+    else
+        PORTB &= ~(1 << PB2);
+}
+
+void IR_Off(void)
+{
+    carrier_enabled = 0;
+    PORTB &= ~(1 << PB2);
+}
+
+void IR_On(void)
+{
+    carrier_enabled = 1;
+}
+
+void IR_Init(void)
+{
+    DDRB  |=  (1 << PB2);
+    PORTB &= ~(1 << PB2);
+
+    TCCR2A = (1 << WGM21);
+    TCCR2B = (1 << CS20);
+    OCR2A  = 209;
+    TIMSK2 = (1 << OCIE2A);
+
+    IR_Off();
+}
 
 void Configure_Pins(void)
 {
-    DDRB |=  0b00000001; // PB0 output (LCD D7)
-    DDRD |=  0b11111000; // PD3-PD7 outputs (LCD)
-    DDRB &= ~0b00000010; // PB1 input (signal)
-    PORTB |= 0b00000010; // Enable pull-up on PB1
-    DDRC &= ~(1 << PC2); // PC2 (SW) input
-    PORTC |= (1 << PC2); // Pull-up on SW
+    DDRD  |=  0b10010000;
+    DDRB  &= ~0b00000011;
+    PORTB |=  0b00000011;
+    DDRC  &= ~(1 << PC2);
+    PORTC |=  (1 << PC2);
+    PORTD |=  (1 << PD3) | (1 << PD5) | (1 << PD6);
 }
 
 void ADC_Init(void)
@@ -39,73 +76,40 @@ uint16_t ADC_Read(uint8_t channel)
 
 const char* Get_Joystick_State(uint16_t x, uint16_t y, uint8_t sw_pressed)
 {
-    if (sw_pressed)                return "PRESSED         ";
-    if (y < CENTER - THRESHOLD)    return "FORWARD         ";
-    if (y > CENTER + THRESHOLD)    return "BACKWARD        ";
-    if (x < CENTER - THRESHOLD)    return "LEFT            ";
-    if (x > CENTER + THRESHOLD)    return "RIGHT           ";
-    return                                "CENTER          ";
+    if (sw_pressed)              return "S";
+    if (y < CENTER - THRESHOLD)  return "F";
+    if (y > CENTER + THRESHOLD)  return "B";
+    if (x < CENTER - THRESHOLD)  return "L";
+    if (x > CENTER + THRESHOLD)  return "R";
+    return "";
 }
 
-// -------------------------------------------------------------------
-// Timing helpers using Timer1 free-running counter (no prescaler)
-// -------------------------------------------------------------------
-void wait_1ms(void)
+void waitms(int ms) { _delay_ms(1); while (--ms) _delay_ms(1); }
+
+void Check_Buttons(void)
 {
-    unsigned int saved = TCNT1;
-    while ((TCNT1 - saved) < (F_CPU / 1000L));
-}
+    static uint8_t last_pd3 = 0, last_pd5 = 0, last_pd6 = 0, last_pb1 = 0;
 
-void waitms(int ms)
-{
-    while (ms--) wait_1ms();
-}
+    uint8_t pd3 = BTN_PD3;
+    uint8_t pd5 = BTN_PD5;
+    uint8_t pd6 = BTN_PD6;
+    uint8_t pb1 = BTN_PB1;
 
-// -------------------------------------------------------------------
-// GetPeriod: measures 'n' periods of the signal on PB1.
-// -------------------------------------------------------------------
-long int GetPeriod(int n)
-{
-    int i, overflow;
-    unsigned int saved_a, saved_b;
+    if (pd3  && !last_pd3)  { putchar('T'); IR_On();  }
+    if (!pd3 &&  last_pd3)    IR_Off();
+    if (pd5  && !last_pd5)  { putchar('G'); IR_On();  }
+    if (!pd5 &&  last_pd5)    IR_Off();
+    if (pd6  && !last_pd6)  { putchar('S'); IR_On();  }
+    if (!pd6 &&  last_pd6)    IR_Off();
+    if (pb1  && !last_pb1)  { putchar('P'); IR_On();  }
+    if (!pb1 &&  last_pb1)    IR_Off();
 
-    overflow = 0;
-    TIFR1 = 1;
-    while (PIN_PERIOD != 0)
-    {
-        if (TIFR1 & 1) { TIFR1 = 1; overflow++; if (overflow > 50) return 0; }
-    }
-    overflow = 0;
-    TIFR1 = 1;
-    while (PIN_PERIOD == 0)
-    {
-        if (TIFR1 & 1) { TIFR1 = 1; overflow++; if (overflow > 50) return 0; }
-    }
-
-    overflow = 0;
-    TIFR1 = 1;
-    saved_a = TCNT1;
-    for (i = 0; i < n; i++)
-    {
-        while (PIN_PERIOD != 0)
-        {
-            if (TIFR1 & 1) { TIFR1 = 1; overflow++; if (overflow > 1024) return 0; }
-        }
-        while (PIN_PERIOD == 0)
-        {
-            if (TIFR1 & 1) { TIFR1 = 1; overflow++; if (overflow > 1024) return 0; }
-        }
-    }
-    saved_b = TCNT1;
-
-    if (saved_b < saved_a) overflow--;
-    return overflow * 0x10000L + (saved_b - saved_a);
+    last_pd3 = pd3; last_pd5 = pd5;
+    last_pd6 = pd6; last_pb1 = pb1;
 }
 
 int main(void)
 {
-    long int count;
-    float T, f, C_nF;
     char buff[17];
     const char *joy_state = "";
     const char *last_joy_state = "";
@@ -113,54 +117,31 @@ int main(void)
     Configure_Pins();
     ADC_Init();
     usart_init();
-
-    TCCR1B |= _BV(CS10);
+    IR_Init();
 
     LCD_4BIT();
     waitms(500);
+    sei();
 
-    printf("\x1b[2J\x1b[1;1H");
-    printf("ATMega328P Capacitance Meter + Joystick\r\n");
-    printf("File: %s\r\n", __FILE__);
-    printf("Compiled: %s, %s\r\n\r\n", __DATE__, __TIME__);
-
-    LCDprint("Freq:", 1, 1);
-    LCDprint("Cap:", 2, 1);
+    LCDprint("Ready", 1, 1);
 
     while (1)
     {
-        // --- Joystick ---
-        uint16_t x  = ADC_Read(0);          // VRx ? PC0 (ADC0)
-        uint16_t y  = ADC_Read(1);          // VRy ? PC1 (ADC1)
-        uint8_t  sw = !(PINC & (1 << PC2)); // SW  ? PC2 (active LOW)
+        Check_Buttons();
+
+        uint16_t x  = ADC_Read(0);
+        uint16_t y  = ADC_Read(1);
+        uint8_t  sw = !(PINC & (1 << PC2));
 
         joy_state = Get_Joystick_State(x, y, sw);
         if (joy_state != last_joy_state)
         {
-            printf("Joystick: %s | X=%4u Y=%4u SW=%u\r\n", joy_state, x, y, sw);
-            last_joy_state = joy_state;
-        }
-
-        // --- Capacitance measurement ---
-        count = GetPeriod(10);
-
-        if (count > 0)
-        {
-            T    = count / (F_CPU * 10.0);
-            f    = 1.0 / T;
-
-            printf("F:%.2f Hz  C:%.3f nF  Joy:%s\r\n", f, C_nF, joy_state);
-
-            sprintf(buff, "F:%.1f Hz", f);
-            LCDprint(buff, 1, 1);
-            sprintf(buff, "C:%.3f nF", C_nF);
-            LCDprint(buff, 2, 1);
-        }
-        else
-        {
-            printf("NO SIGNAL  Joy:%s\r\n", joy_state);
-            LCDprint("Freq: NO SIGNAL ", 1, 1);
-            LCDprint("Cap:  -------   ", 2, 1);
+        	if (joy_state[0] != '\0'){
+	            printf("J:%s\r\n", joy_state);
+	            sprintf(buff, "Joy: %s", joy_state);
+	            LCDprint(buff, 2, 1);
+	            last_joy_state = joy_state;
+            }
         }
 
         waitms(200);

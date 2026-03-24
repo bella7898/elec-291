@@ -6,25 +6,14 @@
 
 static FILE mystdout = FDEV_SETUP_STREAM(usart_putchar_printf, NULL, _FDEV_SETUP_WRITE);
 
-void usart_init( void)
+void usart_init(void)
 {
-	stdout = &mystdout; // setup our stdio stream
-
-	// Not necessary; initialize anyway
-	DDRD |= _BV(PD1);
-	DDRD &= ~_BV(PD0);
-
-	// Set baud rate; lower byte and top nibble
-	UBRR0H = ((_UBRR) & 0xF00);
-	UBRR0L = (uint8_t) ((_UBRR) & 0xFF);
-
-	TX_START();
-	RX_START();
-
-	// Set frame format = 8-N-1
-	UCSR0C = (_DATA << UCSZ00);
-	//UCSR0A bits: RXC0 TXC0 UDRE0 FE0 DOR0 UPE0 U2X0 MPCM0
-	UCSR0A|=0x02; // U2X0 double speed
+	stdout = &mystdout;
+    UCSR0A = 0;
+    UBRR0H = (uint8_t)((_UBRR) >> 8);
+    UBRR0L = (uint8_t)(_UBRR);
+    UCSR0C = (1 << UCSZ01) | (1 << UCSZ00);
+    UCSR0B = (1 << TXEN0) | (1 << RXEN0);
 }
 
 void usart_putchar(char data)

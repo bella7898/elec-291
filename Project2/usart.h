@@ -1,6 +1,6 @@
-#define _BAUD 115200UL
+#define _BAUD 600UL
 #define FOSC 16000000UL
-#define _UBRR (FOSC/8)/_BAUD - 1 // Used for UBRRL and UBRRH
+#define _UBRR (FOSC/16)/_BAUD - 1
 #define _DATA 0x03 // Number of data bits in frame = byte tranmission
 #define TX_START() UCSR0B |= _BV(TXEN0)	 // Enable TX
 #define TX_STOP()  UCSR0B &= ~_BV(TXEN0) // Disable TX
