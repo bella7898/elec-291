@@ -152,3 +152,15 @@ void OLED_PrintString(const char* str)
 {
     while (*str) OLED_PrintChar(*str++);
 }
+
+void OLED_DrawBitmap(const uint8_t *bmp, uint8_t pages, uint8_t cols)
+{
+    for (uint8_t page = 0; page < pages; page++)
+    {
+        OLED_Cmd(0xB0 + page);
+        OLED_Cmd(0x00);
+        OLED_Cmd(0x10);
+        for (uint8_t col = 0; col < cols; col++)
+            OLED_Data(pgm_read_byte(&bmp[page * cols + col]));
+    }
+}

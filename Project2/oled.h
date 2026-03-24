@@ -10,5 +10,6 @@ void OLED_Clear(void);
 void OLED_SetCursor(uint8_t row, uint8_t col);
 void OLED_PrintChar(char c);
 void OLED_PrintString(const char *str);
+void OLED_DrawBitmap(const uint8_t *bmp, uint8_t pages, uint8_t cols);
 
 #endif
