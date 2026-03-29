@@ -8,6 +8,7 @@
 
 #define SDA_LOW()    { SDA_DDR |=  (1<<SDA_PIN); SDA_PORT &= ~(1<<SDA_PIN); }
 #define SDA_HIGH()   { SDA_DDR &= ~(1<<SDA_PIN); SDA_PORT &= ~(1<<SDA_PIN); }
+
 #define SDA_READ()   ( SDA_IN  &   (1<<SDA_PIN) )
 
 #define I2C_DELAY()  _delay_us(5)   // ~100kHz

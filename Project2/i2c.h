@@ -4,14 +4,14 @@
 #include <avr/io.h>
 #include <util/delay.h>
 
-#define SCL_DDR   DDRB
-#define SCL_PORT  PORTB
-#define SCL_PIN   PB0
+#define SCL_DDR   DDRC
+#define SCL_PORT  PORTC
+#define SCL_PIN   PC5
 
-#define SDA_DDR   DDRD
-#define SDA_PORT  PORTD
-#define SDA_PIN   PD7
-#define SDA_IN    PIND
+#define SDA_DDR   DDRC
+#define SDA_PORT  PORTC
+#define SDA_PIN   PC4
+#define SDA_IN    PINC
 
 void I2C_Init(void);
 void I2C_Start(void);
